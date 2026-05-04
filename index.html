@@ -86,7 +86,7 @@
       </section>
       <section class="card">
         <h2 class="module-title">今日计划</h2>
-        <div class="row"><input id="planInput" type="text" placeholder="输入今天要做的一件事" /><button id="addPlanBtn" class="primary">添加</button></div>
+        <div class="row"><input id="planInput" type="text" placeholder="输入今天要做的一件事" /><button id="addPlanBtn" class="primary">添加</button><button id="suggestPlanBtn">生成今日建议（3条）</button></div>
         <ul id="planList"></ul>
         <details style="margin-top:10px;"><summary>历史已完成任务</summary><ul id="donePlanHistory"></ul></details>
       </section>
@@ -181,7 +181,7 @@
         <p id="weeklyNoteMeta" class="muted"></p>
       </section>
     </main>
-    <footer><button id="exportBtn">导出 JSON</button><button id="importBtn">导入 JSON</button><input id="importFile" type="file" accept="application/json" style="display:none" /></footer>
+    <footer><button id="exportBtn">导出 JSON（备份）</button><button id="exportMdBtn">导出 Markdown 摘要（可读）</button><button id="importBtn">导入 JSON</button><input id="importFile" type="file" accept="application/json" style="display:none" /></footer>
   </div>
   <div id="dailyFocusMask" class="daily-focus-mask">
     <div class="daily-focus-modal">
@@ -245,6 +245,32 @@
     function getTodayUndoneSystems(){
       const today = todayISO();
       return state.systems.filter((sys)=>!sys.executions.some((e)=>e.date===today));
+    }
+    function buildSuggestedPlans(){
+      const suggestions = ["必须做：完成今天最重要的一件事（先做 25 分钟）"];
+      const undone = getTodayUndoneSystems();
+      for(let i=0; i<undone.length && suggestions.length<3; i++){
+        suggestions.push(`推进系统：${undone[i].title}`);
+      }
+      const fallback = ["可选加分：整理今天笔记并写 1 句感悟", "可选加分：复盘今天执行，删掉 1 个无效任务"];
+      for(let i=0; i<fallback.length && suggestions.length<3; i++){
+        suggestions.push(fallback[i]);
+      }
+      return suggestions.slice(0,3);
+    }
+    function applySuggestedPlans(){
+      const log = getTodayLog();
+      const existing = new Set(log.plans.map((p)=>p.text.trim()));
+      const plans = buildSuggestedPlans();
+      plans.forEach((text)=>{
+        if(!existing.has(text)){
+          log.plans.push({ id: uid("plan"), text, done:false });
+          existing.add(text);
+        }
+      });
+      saveData();
+      renderPlans();
+      alert("已生成今日建议计划（最多 3 条）。");
     }
     function renderDailyFocusModal(){
       const list = document.getElementById("dailyFocusList");
@@ -539,6 +565,7 @@
     let systemFilterMode = "all";
     let goalFilterMode = "all";
     document.getElementById("addPlanBtn").addEventListener("click",()=>{ const input=document.getElementById("planInput"), text=input.value.trim(); if(!text) return; getTodayLog().plans.push({id:uid("plan"),text,done:false}); input.value=""; saveData(); renderPlans(); });
+    document.getElementById("suggestPlanBtn").addEventListener("click",()=>{ applySuggestedPlans(); });
     document.getElementById("saveReflectionBtn").addEventListener("click",()=>{ const input=document.getElementById("reflectionInput"), text=input.value.trim(); if(!text) return; state.reflectionEntries.push({id:uid("ref"),date:todayISO(),text}); input.value=""; saveData(); renderRichTextModule("reflectionList",state.reflectionEntries,"感悟"); });
     document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>{ currentGainSadTab=btn.dataset.tab; renderGainSad(); }));
     document.getElementById("saveGainSadBtn").addEventListener("click",()=>{ const input=document.getElementById("gainSadInput"), text=input.value.trim(); if(!text) return; (currentGainSadTab==="gains"?state.gainsEntries:state.sadnessEntries).push({id:uid(currentGainSadTab),date:todayISO(),text}); input.value=""; saveData(); renderGainSad(); });
@@ -576,7 +603,70 @@
     document.getElementById("addMemoryBtn").addEventListener("click",async()=>{ const date=document.getElementById("memoryDate").value||todayISO(); const text=document.getElementById("memoryText").value.trim(); const fileInput=document.getElementById("memoryImage"); if(!text){ alert("请先输入回忆描述。"); return; } let img=null; const file=fileInput.files[0]; if(file){ if(file.size>500*1024){ alert("图片超过 500KB，请压缩后再上传。"); return; } img=await fileToBase64(file); } state.memories.push({id:uid("mem"),date,text,image:img}); document.getElementById("memoryText").value=""; fileInput.value=""; saveData(); renderMemories(); });
     document.getElementById("addGoalBtn").addEventListener("click",()=>{ const title=document.getElementById("goalTitle").value.trim(); if(!title) return; state.longTermGoals.push({ id:uid("goal"), title, description:document.getElementById("goalDesc").value.trim(), targetDate:document.getElementById("goalDate").value, status:document.getElementById("goalStatus").value, linkedSystemIds:[] }); document.getElementById("goalTitle").value=""; document.getElementById("goalDesc").value=""; document.getElementById("goalDate").value=""; document.getElementById("goalStatus").value="in_progress"; saveData(); renderAll(); });
     document.getElementById("addSystemBtn").addEventListener("click",()=>{ const title=document.getElementById("newSystemTitle").value.trim(); if(!title) return; const selected=[...document.getElementById("newSystemGoals").selectedOptions].map(op=>op.value); const sys={ id:uid("sys"), title, description:document.getElementById("newSystemDesc").value.trim(), frequencyType:document.getElementById("newSystemType").value, frequencyTarget:Number(document.getElementById("newSystemTarget").value||1), linkedGoalIds:selected, createdAt:todayISO(), executions:[] }; state.systems.push(sys); state.longTermGoals.forEach(g=>{ g.linkedSystemIds=Array.isArray(g.linkedSystemIds)?g.linkedSystemIds:[]; if(selected.includes(g.id)&&!g.linkedSystemIds.includes(sys.id)) g.linkedSystemIds.push(sys.id); }); document.getElementById("newSystemTitle").value=""; document.getElementById("newSystemDesc").value=""; document.getElementById("newSystemTarget").value="1"; saveData(); renderAll(); });
+    function buildMarkdownExport(){
+      const lines=[];
+      const esc=(s)=>String(s||"").replace(/\|/g,"\\|").replace(/\n/g," ");
+      lines.push(`# 个人成长仪表盘摘要`);
+      lines.push("");
+      lines.push(`导出日期：${todayISO()}`);
+      lines.push("");
+      lines.push(`## 用户`);
+      lines.push(`- 姓名：${esc(state.user?.name)}`);
+      lines.push(`- 成长起点：${esc(state.user?.startDate)}`);
+      lines.push("");
+      lines.push(`## 长目标`);
+      if(!state.longTermGoals?.length) lines.push("_暂无_");
+      else state.longTermGoals.forEach((g)=>{ lines.push(`- **${esc(g.title)}**（${statusText(g.status)}）｜目标日：${g.targetDate||"未设置"}`); if(g.description) lines.push(`  - ${esc(g.description)}`); });
+      lines.push("");
+      lines.push(`## 系统与打卡`);
+      if(!state.systems?.length) lines.push("_暂无_");
+      else state.systems.forEach((sys)=>{
+        const p=getCurrentProgress(sys);
+        lines.push(`- **${esc(sys.title)}** ｜ ${frequencyLabel(sys)} ｜ 本周期 ${p.done}/${p.target} 次`);
+        if(sys.description) lines.push(`  - ${esc(sys.description)}`);
+        const goals=state.longTermGoals.filter((g)=>sys.linkedGoalIds?.includes(g.id));
+        if(goals.length) lines.push(`  - 关联目标：${goals.map((g)=>esc(g.title)).join("、")}`);
+        const ex=[...(sys.executions||[])].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,14);
+        if(ex.length){ lines.push(`  - 最近打卡：`); ex.forEach((e)=>{ lines.push(`    - ${e.date}${e.note?`：${esc(e.note)}`:""}`); }); }
+      });
+      lines.push("");
+      lines.push(`## 今日计划（按日）`);
+      const logs=[...(state.dailyLogs||[])].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,14);
+      if(!logs.length) lines.push("_暂无_");
+      else logs.forEach((l)=>{ lines.push(`### ${l.date}`); (l.plans||[]).forEach((p)=>{ lines.push(`- [${p.done?"x":" "}] ${esc(p.text)}`); }); lines.push(""); });
+      lines.push(`## 今日感悟`);
+      if(!state.reflectionEntries?.length) lines.push("_暂无_");
+      else [...state.reflectionEntries].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,30).forEach((r)=>{ lines.push(`- **${r.date}** ${esc(r.text)}`); });
+      lines.push("");
+      lines.push(`## 收获`);
+      if(!state.gainsEntries?.length) lines.push("_暂无_");
+      else [...state.gainsEntries].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20).forEach((x)=>{ lines.push(`- **${x.date}** ${esc(x.text)}`); });
+      lines.push("");
+      lines.push(`## 伤心`);
+      if(!state.sadnessEntries?.length) lines.push("_暂无_");
+      else [...state.sadnessEntries].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20).forEach((x)=>{ lines.push(`- **${x.date}** ${esc(x.text)}`); });
+      lines.push("");
+      lines.push(`## 美好回忆`);
+      if(!state.memories?.length) lines.push("_暂无_");
+      else [...state.memories].sort((a,b)=>b.date.localeCompare(a.date)).forEach((m)=>{ lines.push(`- **${m.date}** ${esc(m.text)}${m.image?"（含图片，详见 JSON 备份）":""}`); });
+      lines.push("");
+      lines.push(`## 本周笔记`);
+      const wk=getWeekKey();
+      const note=(state.weeklyNotes&&state.weeklyNotes[wk])||"";
+      lines.push(`周起始：${wk}`);
+      lines.push(note?esc(note):"_本周暂无笔记_");
+      lines.push("");
+      lines.push(`## 历史周报归档（摘要）`);
+      const arch=[...(state.weeklyArchives||[])].sort((a,b)=>b.weekKey.localeCompare(a.weekKey)).slice(0,12);
+      if(!arch.length) lines.push("_暂无_");
+      else arch.forEach((a)=>{ lines.push(`- **${a.weekKey}** 完成 ${a.stats?.done||0}/${a.stats?.total||0} ｜ 笔记：${esc(a.note||"")}`); });
+      lines.push("");
+      lines.push(`---`);
+      lines.push(`_完整机器可读备份请使用「导出 JSON」。Markdown 为摘要，长列表已截断以便阅读。_`);
+      return lines.join("\n");
+    }
     document.getElementById("exportBtn").addEventListener("click",()=>{ const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`growth-dashboard-backup-${todayISO()}.json`; a.click(); URL.revokeObjectURL(a.href); });
+    document.getElementById("exportMdBtn").addEventListener("click",()=>{ const blob=new Blob([buildMarkdownExport()],{type:"text/markdown;charset=utf-8"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`growth-dashboard-readme-${todayISO()}.md`; a.click(); URL.revokeObjectURL(a.href); });
     document.getElementById("importBtn").addEventListener("click",()=>document.getElementById("importFile").click());
     document.getElementById("importFile").addEventListener("change",async(e)=>{ const file=e.target.files[0]; if(!file) return; try{ const json=JSON.parse(await file.text()); if(!json.user||!Array.isArray(json.systems)||!Array.isArray(json.longTermGoals)) throw new Error("invalid"); state=json; ensureDailyLog(todayISO()); saveData(); renderAll(); alert("导入成功"); } catch { alert("导入失败：JSON 格式或结构不正确。"); } e.target.value=""; });
     if("serviceWorker" in navigator){ window.addEventListener("load",()=>{ navigator.serviceWorker.register("./service-worker.js").catch(()=>{}); }); }
